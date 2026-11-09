@@ -1,0 +1,8 @@
+.DS_Store
+.pio/
+.vscode/
+*.kicad_prl
+*-backups/
+
+# cloned third-party repos (re-clone from reference/README.md)
+reference/*/
