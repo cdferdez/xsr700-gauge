@@ -6,3 +6,5 @@
 
 # cloned third-party repos (re-clone from reference/README.md)
 reference/*/
+.zig-cache/
+zig-out/
