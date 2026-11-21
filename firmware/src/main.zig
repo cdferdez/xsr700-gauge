@@ -1,10 +1,8 @@
 const std = @import("std");
 const core = @import("core");
 
-// Zig 0.17: `main` receives an `Init` bundle (allocators, args, and the `io`
-// interface used for files/stdout). Older tutorials use a different signature.
 pub fn main(init: std.process.Init) !void {
-    _ = init; // not needed yet
+    _ = init;
     std.debug.print("XSR700 gauge (core v{s})\n", .{core.version});
 }
 
