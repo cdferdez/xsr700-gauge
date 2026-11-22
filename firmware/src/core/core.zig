@@ -5,4 +5,5 @@ pub const frame_reader = @import("frame_reader.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
+    _ = @import("kline_vectors_test.zig");
 }
