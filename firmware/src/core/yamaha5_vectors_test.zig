@@ -1,5 +1,5 @@
 const std = @import("std");
-const kline = @import("kline.zig");
+const yamaha5 = @import("protocols/yamaha5.zig");
 
 const testing = std.testing;
 
@@ -14,7 +14,7 @@ const ExpectedError = enum { BadChecksum, EmptyFrame };
 
 const Vector = struct {
     kind: []const u8,
-    bytes: [kline.frame_len]u8,
+    bytes: [yamaha5.frame_len]u8,
     ok: ?Expected = null,
     err: ?ExpectedError = null,
 };
@@ -29,7 +29,7 @@ const File = struct {
 const min_vectors = 1000;
 
 test "decoder agrees with the Python reference on every vector" {
-    const parsed = try std.json.parseFromSlice(File, testing.allocator, @embedFile("kline_vectors"), .{});
+    const parsed = try std.json.parseFromSlice(File, testing.allocator, @embedFile("yamaha5_vectors"), .{});
     defer parsed.deinit();
     const file = parsed.value;
 
@@ -39,7 +39,7 @@ test "decoder agrees with the Python reference on every vector" {
     for (file.vectors, 0..) |v, i| {
         errdefer std.debug.print("vector {d} ({s}) {any} failed\n", .{ i, v.kind, v.bytes });
 
-        const result = kline.decodeFrame(v.bytes);
+        const result = yamaha5.decode(v.bytes);
         if (v.ok) |want| {
             const got = try result;
             try testing.expectEqual(want.rpm, got.rpm);

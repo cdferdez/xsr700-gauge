@@ -1,7 +1,7 @@
 """Generate K-line frame test vectors for the Zig decoder.
 
 The reference decoder here is written from the protocol notes in
-docs/research/data-sources.md (UNVERIFIED), independently of kline.zig.
+docs/research/data-sources.md (UNVERIFIED), independently of firmware/src/core/protocols/yamaha5.zig.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal, TypedDict, TypeAlias
 
 FRAME_LEN = 5
-DEFAULT_OUT = Path(__file__).resolve().parent.parent / "firmware" / "testdata" / "kline_vectors.json"
+DEFAULT_OUT = Path(__file__).resolve().parent.parent / "firmware" / "testdata" / "yamaha5_vectors.json"
 
 Frame: TypeAlias = list[int]
 ErrorName: TypeAlias = Literal["BadChecksum", "EmptyFrame"]

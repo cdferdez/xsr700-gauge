@@ -1,13 +1,13 @@
 const std = @import("std");
 
-/// Display-ready telemetry. All values are in imperial display units.
+/// Display-ready telemetry in imperial units. null = no fresh data, so the UI shows dashes.
 pub const State = struct {
-    rpm: u16 = 0,
-    speed_mph: f32 = 0,
-    /// null = neutral, clutch pulled, or unknown.
+    rpm: ?u16 = null,
+    speed_mph: ?f32 = null,
+    /// null = neutral, clutch pulled, unknown, or no fresh data.
     gear: ?u3 = null,
-    coolant_f: i16 = 0,
-    fuel_pct: u8 = 0,
+    coolant_f: ?i16 = null,
+    fuel_pct: ?u8 = null,
     trip_mi: f32 = 0,
     lamps: Lamps = .{},
 };
@@ -37,7 +37,7 @@ pub fn coolantCtoF(c: i16) i16 {
 }
 
 comptime {
-    std.debug.assert(std.math.maxInt(@FieldType(State, "rpm")) >= 12_000);
+    std.debug.assert(std.math.maxInt(std.meta.Child(@FieldType(State, "rpm"))) >= 12_000);
     std.debug.assert(@sizeOf(Lamps) == 1);
 }
 
@@ -45,9 +45,10 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectApprox = std.testing.expectApproxEqAbs;
 
-test "default state" {
+test "default state has no data" {
     const s = State{};
-    try expectEqual(0, s.rpm);
+    try expectEqual(null, s.rpm);
+    try expectEqual(null, s.speed_mph);
     try expectEqual(null, s.gear);
     try expect(!s.lamps.neutral);
 }

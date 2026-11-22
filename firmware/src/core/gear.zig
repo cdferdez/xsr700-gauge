@@ -4,13 +4,12 @@ pub const gear_count = 6;
 
 const meters_per_mile = 1609.344;
 
-/// UNVERIFIED: CP2 (MT-07 / XSR700) ratios from community sources; confirm against the service manual.
 pub const Drivetrain = struct {
-    primary: f32 = 1.925,
-    gears: [gear_count]f32 = .{ 2.846, 2.125, 1.632, 1.300, 1.091, 0.964 },
-    final: f32 = 43.0 / 16.0,
-    /// 180/55ZR17, unloaded. The loaded rolling circumference is a few percent smaller.
-    tire_circumference_m: f32 = 1.979,
+    primary: f32,
+    /// Ordered 1st to top gear.
+    gears: [gear_count]f32,
+    final: f32,
+    tire_circumference_m: f32,
 
     pub fn rpmPerMph(self: Drivetrain, index: usize) f32 {
         const wheel_rpm_per_mph = meters_per_mile / 60.0 / self.tire_circumference_m;
@@ -20,9 +19,8 @@ pub const Drivetrain = struct {
 
 /// Size of one step in each measured value.
 pub const Resolution = struct {
-    rpm: f32 = 50,
-    /// UNVERIFIED: assumes speed_raw counts whole km/h.
-    mph: f32 = 0.621371,
+    rpm: f32,
+    mph: f32,
 };
 
 const Band = struct {
@@ -75,47 +73,54 @@ pub const GearDetector = struct {
     }
 };
 
-pub const default = GearDetector.init(.{}, 0.04, .{}) catch unreachable;
-
 const testing = std.testing;
 
+const cp2 = Drivetrain{
+    .primary = 1.925,
+    .gears = .{ 2.846, 2.125, 1.632, 1.300, 1.091, 0.964 },
+    .final = 43.0 / 16.0,
+    .tire_circumference_m = 1.979,
+};
+const test_resolution = Resolution{ .rpm = 50, .mph = 0.621371 };
+const detector = GearDetector.init(cp2, 0.04, test_resolution) catch unreachable;
+
 test "rpm per mph matches the hand calculation" {
-    const dt = Drivetrain{};
+    const dt = cp2;
     try testing.expectApproxEqAbs(@as(f32, 199.56), dt.rpmPerMph(0), 0.05);
     try testing.expectApproxEqAbs(@as(f32, 67.59), dt.rpmPerMph(5), 0.05);
 }
 
 test "6th gear at 70 mph" {
-    try testing.expectEqual(@as(?u3, 6), default.gear(4750, 70));
+    try testing.expectEqual(@as(?u3, 6), detector.gear(4750, 70));
 }
 
 test "every gear at 30 mph" {
-    const dt = Drivetrain{};
+    const dt = cp2;
     for (0..gear_count) |i| {
         const rpm: u16 = @intFromFloat(@round(dt.rpmPerMph(i) * 30 / 50) * 50);
-        try testing.expectEqual(@as(?u3, @intCast(i + 1)), default.gear(rpm, 30));
+        try testing.expectEqual(@as(?u3, @intCast(i + 1)), detector.gear(rpm, 30));
     }
 }
 
 test "stopped is null" {
-    try testing.expectEqual(@as(?u3, null), default.gear(1300, 0));
+    try testing.expectEqual(@as(?u3, null), detector.gear(1300, 0));
 }
 
 test "revving with the clutch pulled is null" {
-    try testing.expectEqual(@as(?u3, null), default.gear(7000, 40));
+    try testing.expectEqual(@as(?u3, null), detector.gear(7000, 40));
 }
 
 test "coasting in neutral is null" {
-    try testing.expectEqual(@as(?u3, null), default.gear(1300, 30));
+    try testing.expectEqual(@as(?u3, null), detector.gear(1300, 30));
 }
 
 test "the same ratio is certain at speed but ambiguous when slow" {
-    try testing.expectEqual(@as(?u3, 6), default.gear(2100, 30));
-    try testing.expectEqual(@as(?u3, null), default.gear(700, 10));
+    try testing.expectEqual(@as(?u3, 6), detector.gear(2100, 30));
+    try testing.expectEqual(@as(?u3, null), detector.gear(700, 10));
 }
 
 test "never reports the wrong gear under rpm and speed quantization" {
-    const dt = Drivetrain{};
+    const dt = cp2;
     for (0..gear_count) |i| {
         const want: u3 = @intCast(i + 1);
         for (4..720) |quarter_kmh| {
@@ -126,7 +131,7 @@ test "never reports the wrong gear under rpm and speed quantization" {
 
             const rpm: u16 = @intFromFloat(@round(true_rpm / 50) * 50);
             const mph = @round(kmh) * 0.621371;
-            const got = default.gear(rpm, mph);
+            const got = detector.gear(rpm, mph);
 
             if (got) |g| try testing.expectEqual(want, g);
             if (true_mph > 16) try testing.expectEqual(@as(?u3, want), got);
@@ -135,5 +140,5 @@ test "never reports the wrong gear under rpm and speed quantization" {
 }
 
 test "a tolerance wide enough to overlap 5th and 6th is rejected" {
-    try testing.expectError(error.BandsOverlap, GearDetector.init(.{}, 0.07, .{}));
+    try testing.expectError(error.BandsOverlap, GearDetector.init(cp2, 0.07, test_resolution));
 }

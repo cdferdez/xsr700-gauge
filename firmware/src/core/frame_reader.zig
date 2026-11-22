@@ -1,8 +1,5 @@
 const std = @import("std");
-const kline = @import("kline.zig");
-
-const Frame = kline.Frame;
-const frame_len = kline.frame_len;
+const protocol = @import("protocols/protocol.zig");
 
 pub const Stats = struct {
     frames: u32 = 0,
@@ -13,104 +10,115 @@ pub const Stats = struct {
 
 pub const Sync = enum { hunting, confirming, locked };
 
-pub const FrameReader = struct {
-    lock_after: u8 = 3,
-    miss_limit: u8 = 2,
+pub fn FrameReader(comptime P: type) type {
+    comptime protocol.check(P);
 
-    window: [frame_len]u8 = undefined,
-    len: u8 = 0,
-    sync: Sync = .hunting,
-    matches: u8 = 0,
-    misses: u8 = 0,
-    stats: Stats = .{},
+    return struct {
+        const Self = @This();
+        const frame_len = P.frame_len;
 
-    pub fn push(self: *FrameReader, byte: u8) ?Frame {
-        self.window[self.len] = byte;
-        self.len += 1;
-        if (self.len < frame_len) return null;
+        lock_after: u8 = 3,
+        miss_limit: u8 = 2,
 
-        return switch (self.sync) {
-            .hunting => self.hunt(),
-            .confirming, .locked => self.check(),
-        };
-    }
+        window: [frame_len]u8 = undefined,
+        len: u8 = 0,
+        sync: Sync = .hunting,
+        matches: u8 = 0,
+        misses: u8 = 0,
+        stats: Stats = .{},
 
-    /// Call when the UART reports the line went idle between frames.
-    pub fn gap(self: *FrameReader) void {
-        if (self.len == 0) return;
-        self.stats.bytes_skipped +|= self.len;
-        self.len = 0;
-        self.dropSync();
-    }
+        pub fn push(self: *Self, byte: u8) ?P.Frame {
+            self.window[self.len] = byte;
+            self.len += 1;
+            if (self.len < frame_len) return null;
 
-    fn hunt(self: *FrameReader) ?Frame {
-        const frame = kline.decodeFrame(self.window) catch {
-            self.slide();
-            return null;
-        };
-        self.len = 0;
-        self.matches = 1;
-        return self.accept(frame);
-    }
-
-    fn check(self: *FrameReader) ?Frame {
-        const frame = kline.decodeFrame(self.window) catch |err| switch (err) {
-            error.EmptyFrame => {
-                self.len = 0;
-                return null;
-            },
-            error.BadChecksum => {
-                self.reject();
-                return null;
-            },
-        };
-        self.len = 0;
-        self.misses = 0;
-        self.matches +|= 1;
-        return self.accept(frame);
-    }
-
-    fn accept(self: *FrameReader, frame: Frame) ?Frame {
-        if (self.matches < self.lock_after) {
-            self.sync = .confirming;
-            return null;
+            return switch (self.sync) {
+                .hunting => self.hunt(),
+                .confirming, .locked => self.check(),
+            };
         }
-        self.sync = .locked;
-        self.stats.frames +|= 1;
-        return frame;
-    }
 
-    fn reject(self: *FrameReader) void {
-        if (self.sync == .locked) {
-            self.stats.checksum_errors +|= 1;
-            self.misses += 1;
-            if (self.misses < self.miss_limit) {
-                self.len = 0;
-                return;
+        /// Call when the UART reports the line went idle between frames.
+        pub fn gap(self: *Self) void {
+            if (self.len == 0) return;
+            self.stats.bytes_skipped +|= self.len;
+            self.len = 0;
+            self.dropSync();
+        }
+
+        fn hunt(self: *Self) ?P.Frame {
+            const frame = P.decode(self.window) catch {
+                self.slide();
+                return null;
+            };
+            self.len = 0;
+            self.matches = 1;
+            return self.accept(frame);
+        }
+
+        fn check(self: *Self) ?P.Frame {
+            const frame = P.decode(self.window) catch |err| switch (err) {
+                error.EmptyFrame => {
+                    self.len = 0;
+                    return null;
+                },
+                error.BadChecksum => {
+                    self.reject();
+                    return null;
+                },
+            };
+            self.len = 0;
+            self.misses = 0;
+            self.matches +|= 1;
+            return self.accept(frame);
+        }
+
+        fn accept(self: *Self, frame: P.Frame) ?P.Frame {
+            if (self.matches < self.lock_after) {
+                self.sync = .confirming;
+                return null;
             }
+            self.sync = .locked;
+            self.stats.frames +|= 1;
+            return frame;
         }
-        self.dropSync();
-        self.slide();
-    }
 
-    fn dropSync(self: *FrameReader) void {
-        if (self.sync == .locked) self.stats.sync_losses +|= 1;
-        self.sync = .hunting;
-        self.matches = 0;
-        self.misses = 0;
-    }
+        fn reject(self: *Self) void {
+            if (self.sync == .locked) {
+                self.stats.checksum_errors +|= 1;
+                self.misses += 1;
+                if (self.misses < self.miss_limit) {
+                    self.len = 0;
+                    return;
+                }
+            }
+            self.dropSync();
+            self.slide();
+        }
 
-    fn slide(self: *FrameReader) void {
-        std.mem.copyForwards(u8, self.window[0 .. frame_len - 1], self.window[1..]);
-        self.len = frame_len - 1;
-        self.stats.bytes_skipped +|= 1;
-    }
-};
+        fn dropSync(self: *Self) void {
+            if (self.sync == .locked) self.stats.sync_losses +|= 1;
+            self.sync = .hunting;
+            self.matches = 0;
+            self.misses = 0;
+        }
+
+        fn slide(self: *Self) void {
+            std.mem.copyForwards(u8, self.window[0 .. frame_len - 1], self.window[1..]);
+            self.len = frame_len - 1;
+            self.stats.bytes_skipped +|= 1;
+        }
+    };
+}
 
 const testing = std.testing;
+const yamaha5 = @import("protocols/yamaha5.zig");
 
-const cruise = kline.withChecksum(.{ 136, 68, 0, 122 });
-const idle = kline.withChecksum(.{ 26, 0, 0, 128 });
+const Reader = FrameReader(yamaha5);
+const Frame = yamaha5.Frame;
+
+const cruise = yamaha5.withChecksum(.{ 136, 68, 0, 122 });
+const idle = yamaha5.withChecksum(.{ 26, 0, 0, 128 });
 
 const corrupted = blk: {
     var c = cruise;
@@ -118,13 +126,13 @@ const corrupted = blk: {
     break :blk c;
 };
 
-fn times(comptime n: usize, frame: [frame_len]u8) [n * frame_len]u8 {
-    var out: [n * frame_len]u8 = undefined;
-    for (0..n) |i| out[i * frame_len ..][0..frame_len].* = frame;
+fn times(comptime n: usize, frame: [yamaha5.frame_len]u8) [n * yamaha5.frame_len]u8 {
+    var out: [n * yamaha5.frame_len]u8 = undefined;
+    for (0..n) |i| out[i * yamaha5.frame_len ..][0..yamaha5.frame_len].* = frame;
     return out;
 }
 
-fn feed(r: *FrameReader, bytes: []const u8, out: []Frame) usize {
+fn feed(r: anytype, bytes: []const u8, out: anytype) usize {
     var n: usize = 0;
     for (bytes) |b| {
         if (r.push(b)) |f| {
@@ -140,7 +148,7 @@ fn expectAllRpm(frames: []const Frame, rpm: u16) !void {
 }
 
 test "clean stream locks after lock_after frames" {
-    var r = FrameReader{};
+    var r = Reader{};
     var out: [8]Frame = undefined;
     const n = feed(&r, &times(5, cruise), &out);
 
@@ -151,7 +159,7 @@ test "clean stream locks after lock_after frames" {
 }
 
 test "joining mid-frame skips the partial bytes" {
-    var r = FrameReader{};
+    var r = Reader{};
     var out: [8]Frame = undefined;
     const n = feed(&r, &([_]u8{ cruise[3], cruise[4] } ++ times(5, cruise)), &out);
 
@@ -161,7 +169,7 @@ test "joining mid-frame skips the partial bytes" {
 }
 
 test "a lucky garbage window is rejected during confirmation" {
-    var r = FrameReader{};
+    var r = Reader{};
     var out: [8]Frame = undefined;
     const n = feed(&r, &([_]u8{ 1, 2, 3, 4, 10, 99 } ++ times(5, cruise)), &out);
 
@@ -171,7 +179,7 @@ test "a lucky garbage window is rejected during confirmation" {
 }
 
 test "one corrupted frame is dropped without losing lock" {
-    var r = FrameReader{};
+    var r = Reader{};
     var out: [8]Frame = undefined;
     const n = feed(&r, &(times(4, cruise) ++ corrupted ++ times(2, cruise)), &out);
 
@@ -183,7 +191,7 @@ test "one corrupted frame is dropped without losing lock" {
 }
 
 test "a dropped byte forces a resync" {
-    var r = FrameReader{};
+    var r = Reader{};
     var out: [16]Frame = undefined;
     const n = feed(&r, &(times(4, cruise) ++ cruise[1..].* ++ times(10, cruise)), &out);
 
@@ -194,7 +202,7 @@ test "a dropped byte forces a resync" {
 }
 
 test "steady idle stream can false-lock at the wrong offset" {
-    var r = FrameReader{};
+    var r = Reader{};
     var out: [8]Frame = undefined;
     const n = feed(&r, &(idle[1..].* ++ times(6, idle)), &out);
 
@@ -204,7 +212,7 @@ test "steady idle stream can false-lock at the wrong offset" {
 }
 
 test "gap markers prevent the false lock" {
-    var r = FrameReader{};
+    var r = Reader{};
     var out: [8]Frame = undefined;
 
     var n = feed(&r, idle[1..], &out);
@@ -220,9 +228,37 @@ test "gap markers prevent the false lock" {
 }
 
 test "stats saturate instead of overflowing" {
-    var r = FrameReader{};
+    var r = Reader{};
     r.stats.bytes_skipped = std.math.maxInt(u32) - 1;
     for ([_]u8{ 1, 2, 3 }) |b| _ = r.push(b);
     r.gap();
     try testing.expectEqual(std.math.maxInt(u32), r.stats.bytes_skipped);
+}
+
+const Xor3 = struct {
+    pub const frame_len = 3;
+    pub const Frame = struct { a: u8, b: u8 };
+
+    pub fn decode(bytes: [frame_len]u8) protocol.DecodeError!Xor3.Frame {
+        if (std.mem.allEqual(u8, &bytes, 0)) return error.EmptyFrame;
+        if (bytes[0] ^ bytes[1] != bytes[2]) return error.BadChecksum;
+        return .{ .a = bytes[0], .b = bytes[1] };
+    }
+
+    fn encode(a: u8, b: u8) [frame_len]u8 {
+        return .{ a, b, a ^ b };
+    }
+};
+
+test "the reader works with any protocol that meets the contract" {
+    var r = FrameReader(Xor3){};
+    var out: [8]Xor3.Frame = undefined;
+    const stream = comptime [_]u8{0x55} ++ Xor3.encode(1, 2) ++ Xor3.encode(3, 4) ++
+        Xor3.encode(5, 6) ++ Xor3.encode(7, 8) ++ Xor3.encode(9, 10);
+    const n = feed(&r, &stream, &out);
+
+    try testing.expectEqual(@as(usize, 3), n);
+    try testing.expectEqual(Xor3.Frame{ .a = 5, .b = 6 }, out[0]);
+    try testing.expectEqual(Xor3.Frame{ .a = 9, .b = 10 }, out[2]);
+    try testing.expectEqual(@as(u32, 1), r.stats.bytes_skipped);
 }

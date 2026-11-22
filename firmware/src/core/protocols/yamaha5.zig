@@ -1,9 +1,13 @@
 const std = @import("std");
-const telemetry = @import("telemetry.zig");
+const protocol = @import("protocol.zig");
+const Reading = @import("../reading.zig").Reading;
 
-/// UNVERIFIED: layout observed on an XT660X (Yamaha-DataLogger), a hypothesis for the 2025 XSR700. See docs/research/data-sources.md.
+/// UNVERIFIED: 5-byte layout observed on an XT660X (Yamaha-DataLogger), a hypothesis
+/// for the 2025 XSR700. See docs/research/data-sources.md.
 /// [rpm/50, speed, error, coolant+30, checksum]
 pub const frame_len = 5;
+pub const rpm_per_count = 50;
+pub const coolant_offset_c = 30;
 
 pub const Frame = struct {
     rpm: u16,
@@ -12,9 +16,8 @@ pub const Frame = struct {
     coolant_c: i16,
 };
 
-pub const DecodeError = error{
-    BadChecksum,
-    EmptyFrame,
+pub const Scaling = struct {
+    kmh_per_speed_count: f32,
 };
 
 pub fn checksum(bytes: []const u8) u8 {
@@ -30,28 +33,33 @@ pub fn withChecksum(data: [frame_len - 1]u8) [frame_len]u8 {
     return out;
 }
 
-pub fn decodeFrame(bytes: [frame_len]u8) DecodeError!Frame {
+pub fn decode(bytes: [frame_len]u8) protocol.DecodeError!Frame {
     if (std.mem.allEqual(u8, &bytes, 0)) return error.EmptyFrame;
     if (checksum(bytes[0..4]) != bytes[4]) return error.BadChecksum;
 
     return .{
-        .rpm = @as(u16, bytes[0]) * 50,
+        .rpm = @as(u16, bytes[0]) * rpm_per_count,
         .speed_raw = bytes[1],
         .error_code = bytes[2],
-        .coolant_c = @as(i16, bytes[3]) - 30,
+        .coolant_c = @as(i16, bytes[3]) - coolant_offset_c,
     };
 }
 
-pub fn applyTo(frame: Frame, state: *telemetry.State) void {
-    state.rpm = frame.rpm;
-    state.speed_mph = telemetry.kmhToMph(@floatFromInt(frame.speed_raw));
-    state.coolant_f = telemetry.coolantCtoF(frame.coolant_c);
-    state.lamps.engine_warning = frame.error_code != 0;
+pub fn readings(frame: Frame, scaling: Scaling) [4]Reading {
+    return .{
+        .{ .rpm = frame.rpm },
+        .{ .speed_kmh = @as(f32, @floatFromInt(frame.speed_raw)) * scaling.kmh_per_speed_count },
+        .{ .coolant_c = frame.coolant_c },
+        .{ .engine_error = frame.error_code },
+    };
+}
+
+comptime {
+    protocol.check(@This());
 }
 
 const expectEqual = std.testing.expectEqual;
 const expectError = std.testing.expectError;
-const expectApprox = std.testing.expectApproxEqAbs;
 
 test "checksum wraps at 256" {
     try expectEqual(@as(u8, 0x46), checksum(&.{ 136, 68, 0, 122 }));
@@ -63,7 +71,7 @@ test "withChecksum appends the sum" {
 }
 
 test "decode a typical cruising frame" {
-    const f = try decodeFrame(.{ 136, 68, 0, 122, 0x46 });
+    const f = try decode(.{ 136, 68, 0, 122, 0x46 });
     try expectEqual(@as(u16, 6800), f.rpm);
     try expectEqual(@as(u8, 68), f.speed_raw);
     try expectEqual(@as(u8, 0), f.error_code);
@@ -71,41 +79,39 @@ test "decode a typical cruising frame" {
 }
 
 test "max rpm byte does not overflow" {
-    const f = try decodeFrame(withChecksum(.{ 255, 0, 0, 30 }));
+    const f = try decode(withChecksum(.{ 255, 0, 0, 30 }));
     try expectEqual(@as(u16, 12_750), f.rpm);
 }
 
 test "coolant below zero" {
-    const f = try decodeFrame(withChecksum(.{ 0, 0, 0, 10 }));
+    const f = try decode(withChecksum(.{ 0, 0, 0, 10 }));
     try expectEqual(@as(i16, -20), f.coolant_c);
 }
 
 test "bad checksum is rejected" {
     var bytes = withChecksum(.{ 136, 68, 0, 122 });
     bytes[1] ^= 0x04;
-    try expectError(error.BadChecksum, decodeFrame(bytes));
+    try expectError(error.BadChecksum, decode(bytes));
 }
 
 test "compensating bit flips slip past the checksum" {
-    const f = try decodeFrame(.{ 136, 64, 4, 122, 0x46 });
+    const f = try decode(.{ 136, 64, 4, 122, 0x46 });
     try expectEqual(@as(u8, 4), f.error_code);
 }
 
 test "all-zero frame is rejected even though its checksum matches" {
-    try expectError(error.EmptyFrame, decodeFrame(.{ 0, 0, 0, 0, 0 }));
+    try expectError(error.EmptyFrame, decode(.{ 0, 0, 0, 0, 0 }));
 }
 
-test "applyTo fills display state" {
-    var s = telemetry.State{};
-    applyTo(try decodeFrame(withChecksum(.{ 136, 100, 0, 122 })), &s);
-    try expectEqual(@as(u16, 6800), s.rpm);
-    try expectApprox(@as(f32, 62.137), s.speed_mph, 0.01);
-    try expectEqual(@as(i16, 198), s.coolant_f);
-    try expectEqual(false, s.lamps.engine_warning);
+test "readings carry metric values" {
+    const rs = readings(try decode(withChecksum(.{ 136, 100, 0x2A, 122 })), .{ .kmh_per_speed_count = 1.0 });
+    try expectEqual(Reading{ .rpm = 6800 }, rs[0]);
+    try expectEqual(Reading{ .speed_kmh = 100 }, rs[1]);
+    try expectEqual(Reading{ .coolant_c = 92 }, rs[2]);
+    try expectEqual(Reading{ .engine_error = 0x2A }, rs[3]);
 }
 
-test "nonzero error code lights engine warning" {
-    var s = telemetry.State{};
-    applyTo(try decodeFrame(withChecksum(.{ 20, 0, 0x2A, 60 })), &s);
-    try expectEqual(true, s.lamps.engine_warning);
+test "speed scaling is applied" {
+    const rs = readings(try decode(withChecksum(.{ 0, 100, 0, 30 })), .{ .kmh_per_speed_count = 0.5 });
+    try expectEqual(Reading{ .speed_kmh = 50 }, rs[1]);
 }

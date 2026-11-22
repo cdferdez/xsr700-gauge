@@ -8,7 +8,7 @@
 - The first screen is Concept 01 "Redline", 960×320.
 - Desktop only.
 
-**Already installed:** zig 0.17.1, SDL2 (brew), pkg-config, python 3.13, VS Code.
+**Already installed:** zig 0.17.1, SDL2 (brew), pkg-config, VS Code. Python 3.14 comes from the `xsr700-gauge` conda env (see `README.md`).
 
 ## How each step works
 - **Learn:** the few concepts the step introduces. Claude explains them first, with short readings.
@@ -54,13 +54,24 @@ Each step is sized for one sitting of about 1–3 hours. Stages A and B need no 
 
 **A6. Calculating the gear**
 - Learn: the drivetrain ratio chain (engine → primary 1.925 → gear ratio → final drive 43/16 → rear tire), and tolerance for noisy data.
-- Build: `src/core/gear.zig` with `gearFrom(rpm, mph) ?u3`. Use the CP2 ratios 2.846/2.125/1.632/1.300/1.091/0.964, flagged "verify against the service manual". Return null when the clutch is pulled or the bike is stopped.
+- Build: `src/core/gear.zig` with `GearDetector.gear(rpm, mph) ?u3`. Use the CP2 ratios 2.846/2.125/1.632/1.300/1.091/0.964, flagged "verify against the service manual". Return null when the clutch is pulled, the bike is stopped, or the measurement is too coarse to tell.
 - Done when: tests cover all 6 gears, a mid-shift case, and a stopped case.
 - Explain it back: why is gear ambiguous at low speed?
 
-**A7. Smoothing**
+**A7. Seams: readings, a generic reader, and a bike profile**
+- Learn: separating "what the bike sends" from "what the gauge needs", tagged unions (`union(enum)`) and exhaustive `switch`, generics as type-returning functions (`fn FrameReader(comptime P: type) type`), compile-time interface checks (`@hasDecl`, `@compileError`), and the direction of dependencies between modules.
+- Build:
+  - `src/core/reading.zig`: a `Reading` tagged union in metric units (rpm, speed_kmh, coolant_c, engine_error, gear, neutral). Sources produce these and never touch `State`.
+  - `src/core/protocols/yamaha5.zig`: the current `kline.zig` layout, renamed for what it is (the 5-byte layout seen on an XT660X). It decodes to `Reading`s instead of writing `State`.
+  - Make `FrameReader` generic over a protocol type; the existing tests run against `yamaha5`.
+  - `src/core/signal_store.zig`: the only code that writes `State`. Converts units, picks gear (a sensor `.gear` reading if one arrived recently, else `gear.zig`), and tracks staleness per signal.
+  - `src/core/profile.zig`: every UNVERIFIED constant (drivetrain, speed scale, protocol choice) in one place.
+- Done when: all existing tests pass through the new seams, a test with a fake protocol proves the reader is protocol-agnostic, and a signal store test shows a sensor gear reading overriding the calculated one and a stale signal clearing.
+- Explain it back: if Phase 1 shows an 8-byte frame with a gear byte, which files change, and which don't?
+
+**A8. Smoothing**
 - Learn: exponential moving average, rate limiting, time-step independence (dt), and why a raw signal makes a jittery gauge.
-- Build: `src/core/smoothing.zig` with tests.
+- Build: `src/core/smoothing.zig` with tests, used inside `signal_store.zig` after the gear calculation (gear is computed from raw values). Add a short gear hold so the readout doesn't blank during a shift.
 - Done when: a noisy input test produces a smooth output that still reaches its target within N ms.
 - Explain it back: what's the trade-off between smoothness and lag?
 
@@ -68,14 +79,14 @@ Each step is sized for one sitting of about 1–3 hours. Stages A and B need no 
 
 **B1. A synthetic ride (Python)**
 - Learn: a simple vehicle model: throttle → RPM → shift points → speed through the gear ratios.
-- Build: `tools/make_ride.py` writes `captures/synthetic/ride_01.csv` (t_ms, rpm, mph, gear, coolant_f, fuel_pct). Optionally plot it with matplotlib.
+- Build: `tools/make_ride.py` writes `captures/synthetic/ride_01.csv` with what a bike would send, in metric (t_ms, rpm, speed_kmh, coolant_c, fuel_pct), plus a `true_gear` column for checking `gear.zig`. Optionally plot it with matplotlib.
 - Done when: the plot looks like a believable ride (sawtooth RPM, rising speed).
 - Explain it back: why does RPM drop on each upshift?
 
 **B2. Data sources behind one interface**
-- Learn: tagged unions and `switch`, the "interface" pattern in Zig, reading files and parsing CSV.
-- Build: `src/sources/` with `sweep.zig` and `replay.zig` behind a single `Source` union, selected by `--source=sweep|replay:<file>`.
-- Done when: the terminal prints a live text dashboard at 10 Hz from either source, passed through gear.zig and smoothing.zig.
+- Learn: choosing an implementation at runtime with a tagged union of sources (vs. the compile-time protocol choice from A7), reading files and parsing CSV.
+- Build: `src/sources/` with `sweep.zig` and `replay.zig` behind a single `Source` union, selected by `--source=sweep|replay:<file>`. Both emit `Reading`s.
+- Done when: the terminal prints a live text dashboard at 10 Hz from either source, passed through `signal_store.zig`.
 - Explain it back: what would you add to support real bike data later?
 
 ## Stage C: Graphics with LVGL
@@ -106,7 +117,7 @@ Each step is sized for one sitting of about 1–3 hours. Stages A and B need no 
 
 **C5. Wiring it all together**
 - Learn: the main loop (tick, poll source, update state, LVGL timer handler) and frame pacing.
-- Build: source → smoothing → State → `redline.update(State)` at 30 Hz. Add the keyboard source: ↑ held to rev, 1–6/N for gear, T/H/A to toggle lamps.
+- Build: source → `Reading`s → signal store → State → `redline.update(State)` at 30 Hz. Add the keyboard source: ↑ held to rev, 1–6/N for gear, T/H/A to toggle lamps.
 - Done when: sweep, keys, and replay of `ride_01.csv` all drive the screen.
 - Explain it back: what's the only file that would change when this runs on the real chip?
 
@@ -130,7 +141,7 @@ Each step is sized for one sitting of about 1–3 hours. Stages A and B need no 
 ---
 
 ## Rules that keep it portable
-`core/` and `sources/` never import LVGL or SDL. `ui/` only reads `State`. Only `platform/sim.zig` knows it's running on a Mac.
+`core/` and `sources/` never import LVGL or SDL. Sources and protocols emit `Reading`s and never touch `State`; only `signal_store.zig` writes `State`. `ui/` only reads `State`. Unverified bike facts live in `profile.zig`. Only `platform/sim.zig` knows it's running on a Mac.
 
 ## Risks
 - **C1 (translate-c on LVGL headers) is the biggest unknown.** The fallback is a small C shim.

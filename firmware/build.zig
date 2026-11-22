@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    core.addAnonymousImport("kline_vectors", .{ .root_source_file = b.path("testdata/kline_vectors.json") });
+    core.addAnonymousImport("yamaha5_vectors", .{ .root_source_file = b.path("testdata/yamaha5_vectors.json") });
 
     const sim = b.addExecutable(.{
         .name = "gauge-sim",
@@ -35,7 +35,7 @@ pub fn build(b: *std.Build) void {
 
     const gen = b.addSystemCommand(&.{"python3"});
     gen.addFileArg(b.path("../tools/gen_vectors.py"));
-    gen.addArg("testdata/kline_vectors.json");
+    gen.addArg("testdata/yamaha5_vectors.json");
     gen.setCwd(b.path("."));
     b.step("vectors", "Regenerate testdata/ from tools/gen_vectors.py").dependOn(&gen.step);
 }

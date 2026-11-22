@@ -16,9 +16,10 @@ Source: [terrafirma2021/Yamaha-DataLogger](https://github.com/terrafirma2021/Yam
 mid-2000s 5-speed single with no gear display. Yamaha may share this diagnostic stream
 across models, but **treat the whole frame layout below as a hypothesis for the XSR700**:
 frame length, byte order, scaling, offsets and baud rate are all open.
-`firmware/src/core/kline.zig` implements this hypothesis. If real captures show a
-different frame, `FrameReader` never locks (`bytes_skipped` keeps climbing), and
-only the constants in `kline.zig` should need to change.
+`firmware/src/core/protocols/yamaha5.zig` implements this hypothesis. If real captures
+show a different frame, `FrameReader` never locks (`bytes_skipped` keeps climbing).
+The fix is a new protocol file plus a one-line change in `firmware/src/core/profile.zig`,
+which also holds every other unverified constant (speed scale, drivetrain, tire).
 
 - UART, **~16040 baud** (code uses `Serial1.begin(16040, SERIAL_8N1, ...)`), 8N1, 12 V single wire.
 - The logger only listens and sends no init. It waits for a `0x3E` byte, then a 61-byte block.
