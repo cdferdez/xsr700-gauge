@@ -1,13 +1,24 @@
 # Data sources: how to get data off the bike
 
 > Status: **unverified on a 2025 XSR700.** Everything below comes from community
-> reverse engineering on MT-07s of various years. Phase 1 is about confirming
-> or refuting it with a logic analyzer on *this* bike.
+> reverse engineering on *other* Yamahas: the K-line frame layout probably comes
+> from an **XT660X**, the CAN claims from a 2014 MT-07, and the immobilizer notes
+> from a 2017 MT-07. Phase 1 is about confirming or refuting it with a logic
+> analyzer on *this* bike.
 
 ## 1. Yamaha K-line / single-wire serial (most promising)
 
 ### a) ECU → meter broadcast stream (passive listen)
 Source: [terrafirma2021/Yamaha-DataLogger](https://github.com/terrafirma2021/Yamaha-DataLogger) (cloned in `reference/`, **no license file, so treat it as all rights reserved and use it only for reference**)
+
+**Source bike: probably an XT660X, not a CP2 twin.** The README names no model, but
+`yamaha/include/gear.h` has `MAX_GEARS = 5; // Set 5 for xt660x`. The XT660X is a
+mid-2000s 5-speed single with no gear display. Yamaha may share this diagnostic stream
+across models, but **treat the whole frame layout below as a hypothesis for the XSR700**:
+frame length, byte order, scaling, offsets and baud rate are all open.
+`firmware/src/core/kline.zig` implements this hypothesis. If real captures show a
+different frame, `FrameReader` never locks (`bytes_skipped` keeps climbing), and
+only the constants in `kline.zig` should need to change.
 
 - UART, **~16040 baud** (code uses `Serial1.begin(16040, SERIAL_8N1, ...)`), 8N1, 12 V single wire.
 - The logger only listens and sends no init. It waits for a `0x3E` byte, then a 61-byte block.
@@ -20,9 +31,9 @@ Source: [terrafirma2021/Yamaha-DataLogger](https://github.com/terrafirma2021/Yam
   - Error: raw error code byte
 - Frames arrive about every 7 ms (based on the emulator).
 - Interface: **L9637D** K-line transceiver, 510 Ω pull-up on the TX side. The ESP32 must boot before the ECU (the author uses an external power switch).
-- Gear is *calculated* from RPM/speed ratios, not read directly.
+- The logger calculates gear itself from RPM/speed ratios (a GIpro-style learn mode: cycle through the gears on the centre stand). On the source bike that was the only option. **This says nothing about whether the XSR700 has a gear position sensor**; see §5.
 
-The stream contains only RPM, speed, coolant and an error code. Fuel level, neutral, turn signals and the other lamps are probably hard-wired to the meter (confirm with the wiring diagram).
+On the source bike, the stream contains only RPM, speed, coolant and an error code. On the XSR700, fuel level, neutral, turn signals and the other lamps are probably hard-wired to the meter (confirm with the wiring diagram).
 
 ### b) Immobilizer K-line (do not interfere)
 Source: [vik0t0r: Demystifying Yamaha immobilisers](https://vik0t0r.github.io/posts/demystifying-yamaha-immobilisers) (MT-07 2017)
@@ -68,11 +79,42 @@ Expected per typical Yamaha meters; **confirm in the service manual wiring diagr
 - IMU (lean angle)
 - Hall sensor on the front wheel (independent speed)
 
+## 5. Gear: sensor or calculated? (open question)
+
+**Known (owner's manual, MTM660N):**
+- The stock display shows the selected gear, and neutral as "–" plus the neutral indicator light (§ "Transmission gear display", p. 4-7).
+- A **neutral switch** exists. It is part of the ignition circuit cut-off check (shift into gear with the sidestand down and the engine should stall).
+
+**Unknown:** whether gears 1–6 come from a **gear position sensor** on the shift drum or are **calculated** from RPM/speed (by the ECU or the meter).
+
+**Where a sensed gear could appear:**
+
+| Path | What a capture would show |
+|---|---|
+| Longer or different K-line frame on the 2025 bike | More than 5 bytes per frame; one byte steps with each shift |
+| Another message on the same wire (e.g. the 61-byte `0x3E` block, diag mode) | A byte that tracks gear inside that block |
+| CAN (if the diagnostic connector has CAN pins) | A gear field, e.g. the claimed `0x236` |
+| Direct wire from the sensor to the meter | Nothing in any data stream; a per-gear voltage on a meter pin |
+
+**Tests:**
+1. **Garage test (free):** engine running, bike stopped, clutch pulled, shift into 1st. If the display shows "1" at 0 mph, it must come from a sensor (no RPM/speed ratio exists at standstill). If it shows "–" or nothing until rolling, it is almost certainly calculated.
+2. **Rolling test:** steady speed in 3rd, pull the clutch, blip the throttle. A sensor keeps showing "3"; a calculation drops out or changes.
+3. **Shift-and-compare capture:** logic analyzer on the K-line, engine running at steady RPM, bike stationary, clutch pulled. Shift N → 1 → 2 → 3 with a pause in each gear. Look for a byte that changes at each shift while everything else holds steady.
+4. **Wiring diagram:** look for a gear position sensor on the engine harness, and note whether it goes to the ECU or to the meter.
+
+**Impact:**
+- **No sensor:** `firmware/src/core/gear.zig` is what the stock meter does too, and the only option.
+- **Sensor → ECU, gear in a data stream:** read it directly; keep `gear.zig` as a cross-check.
+- **Sensor → ECU only, not in any stream we can read:** Stage 1 keeps using `gear.zig`.
+- **Sensor → meter:** Stage 2 must read that wire (likely an analog voltage per gear); Stage 1 could tap it.
+
 ## Phase 1 checklist
 - [ ] Buy the service manual (2022+ XSR700 / MTM690-U family). Copy the wiring diagram + meter connector pinout into this folder.
 - [ ] Identify the meter connector and wire colours on the bike; photograph them into `captures/`.
 - [ ] Back-probe with a multimeter (key ON, engine OFF/ON) to label 12 V, GND, serial and lamp lines.
-- [ ] Logic analyzer (via a resistor divider/L9637D!) on the serial line: confirm baud, frame format and the 0x3E header.
+- [ ] Logic analyzer (via a resistor divider/L9637D!) on the serial line: confirm baud, frame length, byte layout, checksum and the 0x3E header. Assume nothing from the XT660X layout.
+- [ ] Note whether there is a quiet gap between frames (if so, `FrameReader.gap()` can use UART idle detection).
+- [ ] Gear: run the garage test, rolling test and shift-and-compare capture (§5). Check the wiring diagram for a gear position sensor.
 - [ ] Check the diagnostic connector pins: K-line only, or CAN as well?
 - [ ] Test: unplug the meter, try to start the bike. Note immobilizer/ABS behaviour.
 - [ ] Fill in `signals.md` with one row per signal: name, source, type, pin, wire colour, decode.
