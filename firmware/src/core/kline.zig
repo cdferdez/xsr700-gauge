@@ -1,7 +1,7 @@
 const std = @import("std");
 const telemetry = @import("telemetry.zig");
 
-/// UNVERIFIED: layout from community reverse engineering (Yamaha-DataLogger), not yet confirmed on the 2025 XSR700.
+/// UNVERIFIED: layout observed on an XT660X (Yamaha-DataLogger), a hypothesis for the 2025 XSR700. See docs/research/data-sources.md.
 /// [rpm/50, speed, error, coolant+30, checksum]
 pub const frame_len = 5;
 
